@@ -47,6 +47,9 @@
 #include "lwip/dns.h"
 #include "tcpip_adapter.h"
 #include "mdns.h"
+#include "lwip/sys.h"
+#include "lwip/netif.h"
+#include <lwip/netdb.h>
 
 #if !MICROPY_ESP_IDF_4
 #include "esp_wifi_types.h"
@@ -56,6 +59,8 @@
 #include "modnetwork.h"
 
 #define MODNETWORK_INCLUDE_CONSTANTS (1)
+
+STATIC mp_obj_t netif_enable_broadcasts();
 
 NORETURN void _esp_exceptions(esp_err_t e) {
     switch (e) {
@@ -275,6 +280,7 @@ STATIC mp_obj_t esp_initialize() {
         ESP_LOGD("modnetwork", "Initializing Event Loop");
         ESP_EXCEPTIONS(esp_event_loop_init(event_handler, NULL));
         ESP_LOGD("modnetwork", "esp_event_loop_init done");
+	netif_enable_broadcasts();
         initialized = 1;
     }
     return mp_const_none;
@@ -286,36 +292,48 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_initialize_obj, esp_initialize);
 #endif
 
 STATIC mp_obj_t esp_active(size_t n_args, const mp_obj_t *args) {
-    wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
-
-    wifi_mode_t mode;
-    if (!wifi_started) {
-        mode = WIFI_MODE_NULL;
-    } else {
-        ESP_EXCEPTIONS(esp_wifi_get_mode(&mode));
+  // There is a disconnect here, this is an object function against the specific wifi interface, which
+  // really is what you want, but the esp framwork has a gernic start/stop for all interfaces...
+  //wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  if (n_args == 1) {
+    bool active = mp_obj_is_true(args[0]);
+    if( active ) {
+      esp_wifi_start();
     }
-
-    int bit = (self->if_id == WIFI_IF_STA) ? WIFI_MODE_STA : WIFI_MODE_AP;
-
-    if (n_args > 1) {
-        bool active = mp_obj_is_true(args[1]);
-        mode = active ? (mode | bit) : (mode & ~bit);
-        if (mode == WIFI_MODE_NULL) {
-            if (wifi_started) {
-                ESP_EXCEPTIONS(esp_wifi_stop());
-                wifi_started = false;
-            }
-        } else {
-            ESP_EXCEPTIONS(esp_wifi_set_mode(mode));
-            if (!wifi_started) {
-                ESP_EXCEPTIONS(esp_wifi_start());
-                wifi_started = true;
-            }
-        }
+    else {
+      esp_wifi_stop();
     }
+  }
+  return mp_const_none;
+    /* wifi_mode_t mode; */
+    /* if (!wifi_started) { */
+    /*     mode = WIFI_MODE_NULL; */
+    /* } else { */
+    /*     ESP_EXCEPTIONS(esp_wifi_get_mode(&mode)); */
+    /* } */
 
-    return (mode & bit) ? mp_const_true : mp_const_false;
+    /* int bit = (self->if_id == WIFI_IF_STA) ? WIFI_MODE_STA : WIFI_MODE_AP; */
+
+    /* if (n_args > 1) { */
+    /*     bool active = mp_obj_is_true(args[1]); */
+    /*     mode = active ? (mode | bit) : (mode & ~bit); */
+    /*     if (mode == WIFI_MODE_NULL) { */
+    /*         if (wifi_started) { */
+    /*             ESP_EXCEPTIONS(esp_wifi_stop()); */
+    /*             wifi_started = false; */
+    /*         } */
+    /*     } else { */
+    /* 	  //ESP_EXCEPTIONS(esp_wifi_set_mode(mode)); */
+    /* 	  if (!wifi_started) { */
+    /* 	    ESP_EXCEPTIONS(esp_wifi_start()); */
+    /* 	    wifi_started = true; */
+    /* 	  } */
+    /*     } */
+    /* }  */
+
+    /* return (mode & bit) ? mp_const_true : mp_const_false; */
 }
+
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_active_obj, 1, 2, esp_active);
 
@@ -435,6 +453,25 @@ STATIC mp_obj_t esp_status(size_t n_args, const mp_obj_t *args) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_status_obj, 1, 2, esp_status);
+
+/**
+ *  The mode is a global in the esp-idf. 
+ */
+STATIC mp_obj_t esp_mode(size_t n_args, const mp_obj_t *args) {
+  wifi_mode_t mode;
+  if (n_args == 0 ) {
+    ESP_EXCEPTIONS(esp_wifi_get_mode(&mode));
+    return mp_obj_new_int((int)mode);
+  }
+  if(n_args == 1) {
+    mode = (wifi_mode_t)mp_obj_get_int(args[0]);
+    ESP_EXCEPTIONS(esp_wifi_set_mode(mode))
+  }
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_mode_obj, 0, 1, esp_mode);
+
+
 
 STATIC mp_obj_t esp_scan(mp_obj_t self_in) {
     // check that STA mode is active
@@ -724,8 +761,73 @@ unknown:
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(esp_config_obj, 1, esp_config);
 
+STATIC mp_obj_t esp_phy_mode(size_t n_args, const mp_obj_t *args) {
+  if(n_args >= 1) {
+    wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+    //return mp_obj_new_int(self->if_id);
+    //bool is_wifi = self->if_id == WIFI_IF_AP || self->if_id == WIFI_IF_STA;    
+    uint8_t pbm = 0;
+    if (n_args == 2) {
+      pbm = (uint8_t)mp_obj_get_int(args[1]);      
+      esp_wifi_set_protocol(self->if_id,pbm);
+      return mp_const_none;
+    } else {
+      esp_wifi_get_protocol(self->if_id,&pbm);
+      return mp_obj_new_int((int)pbm);
+    }
+  }
+  return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_phy_mode_obj, 1, 2, esp_phy_mode);
+
+/**
+ *  The esp examples use protocol, I haven't been using micropython
+ *  long enough to now what we want to map to.  Since I don't even
+ *  have the ESP stuff working, keeping a close to that model for now.
+ */
+STATIC mp_obj_t esp_protocol(size_t n_args, const mp_obj_t *args) {
+  return esp_phy_mode(n_args,args);
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_protocol_obj, 1, 2, esp_protocol);
+
+int wifi_if_2_tcp_adapter_if(int wifi_if) {
+  switch (wifi_if) {
+  case WIFI_IF_AP: 
+    return TCPIP_ADAPTER_IF_AP;
+  case WIFI_IF_STA:
+    return TCPIP_ADAPTER_IF_STA;
+  }
+  return -1;
+}
+
+/**
+ *  up/down the dhcps server for this interface
+ */
+STATIC mp_obj_t dhcps(size_t n_args, const mp_obj_t *args) {
+  int up_down;
+  if (n_args == 0 ) {
+    return mp_const_none;
+  }
+  wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  if (n_args == 2) {
+    up_down = (uint8_t)mp_obj_get_int(args[1]);
+    if(up_down) {
+      tcpip_adapter_dhcps_start(wifi_if_2_tcp_adapter_if(self->if_id));
+      return mp_obj_new_int(up_down);
+    }
+    else {
+      tcpip_adapter_dhcps_stop(wifi_if_2_tcp_adapter_if(self->if_id));
+      return mp_obj_new_int(up_down);
+    }
+  }
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(dhcps_obj,1,2,dhcps);
+
+
 STATIC const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_active), MP_ROM_PTR(&esp_active_obj) },
     { MP_ROM_QSTR(MP_QSTR_connect), MP_ROM_PTR(&esp_connect_obj) },
     { MP_ROM_QSTR(MP_QSTR_disconnect), MP_ROM_PTR(&esp_disconnect_obj) },
     { MP_ROM_QSTR(MP_QSTR_status), MP_ROM_PTR(&esp_status_obj) },
@@ -733,6 +835,11 @@ STATIC const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_isconnected), MP_ROM_PTR(&esp_isconnected_obj) },
     { MP_ROM_QSTR(MP_QSTR_config), MP_ROM_PTR(&esp_config_obj) },
     { MP_ROM_QSTR(MP_QSTR_ifconfig), MP_ROM_PTR(&esp_ifconfig_obj) },
+    { MP_ROM_QSTR(MP_QSTR_phy_mode), MP_ROM_PTR(&esp_phy_mode_obj) },
+    { MP_ROM_QSTR(MP_QSTR_protocol), MP_ROM_PTR(&esp_protocol_obj) },
+    { MP_ROM_QSTR(MP_QSTR_dhcps),MP_ROM_PTR(&dhcps_obj) },    
+    
+    
 };
 
 STATIC MP_DEFINE_CONST_DICT(wlan_if_locals_dict, wlan_if_locals_dict_table);
@@ -743,11 +850,21 @@ const mp_obj_type_t wlan_if_type = {
     .locals_dict = (mp_obj_t)&wlan_if_locals_dict,
 };
 
-STATIC mp_obj_t esp_phy_mode(size_t n_args, const mp_obj_t *args) {
-    return mp_const_none;
+STATIC mp_obj_t netif_enable_broadcasts() {
+  // This is acting as a cheap man's DHCP relay agent.  If we can
+  // prove that we can get DHCP working in a multihop (distance from
+  // aggregator) environment, we will invest more time with a proper
+  // DHCP RAGENT
+  struct netif *netif_p;
+  for(netif_p = netif_list; netif_p; netif_p = netif_p->next) {
+    ESP_LOGI("GUS","netif_p->flags=%d",netif_p->flags);
+    netif_p->flags = netif_p->flags | NETIF_FLAG_BROADCAST;
+  }
+  return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp_phy_mode_obj, 0, 1, esp_phy_mode);
 
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(netif_enable_broadcasts_obj, netif_enable_broadcasts);
 
 STATIC const mp_rom_map_elem_t mp_module_network_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_network) },
@@ -757,15 +874,21 @@ STATIC const mp_rom_map_elem_t mp_module_network_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_LAN), MP_ROM_PTR(&get_lan_obj) },
     { MP_ROM_QSTR(MP_QSTR_PPP), MP_ROM_PTR(&ppp_make_new_obj) },
     #endif
-    { MP_ROM_QSTR(MP_QSTR_phy_mode), MP_ROM_PTR(&esp_phy_mode_obj) },
 
     #if MODNETWORK_INCLUDE_CONSTANTS
     { MP_ROM_QSTR(MP_QSTR_STA_IF), MP_ROM_INT(WIFI_IF_STA)},
     { MP_ROM_QSTR(MP_QSTR_AP_IF), MP_ROM_INT(WIFI_IF_AP)},
 
+    
+    { MP_ROM_QSTR(MP_QSTR_MODE_STA), MP_ROM_INT(WIFI_MODE_STA) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_AP), MP_ROM_INT(WIFI_MODE_AP) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_APSTA), MP_ROM_INT(WIFI_MODE_APSTA) },
+
+    
     { MP_ROM_QSTR(MP_QSTR_MODE_11B), MP_ROM_INT(WIFI_PROTOCOL_11B) },
     { MP_ROM_QSTR(MP_QSTR_MODE_11G), MP_ROM_INT(WIFI_PROTOCOL_11G) },
     { MP_ROM_QSTR(MP_QSTR_MODE_11N), MP_ROM_INT(WIFI_PROTOCOL_11N) },
+    { MP_ROM_QSTR(MP_QSTR_MODE_LR),  MP_ROM_INT(WIFI_PROTOCOL_LR) },
 
     { MP_ROM_QSTR(MP_QSTR_AUTH_OPEN), MP_ROM_INT(WIFI_AUTH_OPEN) },
     { MP_ROM_QSTR(MP_QSTR_AUTH_WEP), MP_ROM_INT(WIFI_AUTH_WEP) },
@@ -777,7 +900,10 @@ STATIC const mp_rom_map_elem_t mp_module_network_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_PHY_LAN8720), MP_ROM_INT(PHY_LAN8720) },
     { MP_ROM_QSTR(MP_QSTR_PHY_TLK110), MP_ROM_INT(PHY_TLK110) },
     { MP_ROM_QSTR(MP_QSTR_PHY_IP101), MP_ROM_INT(PHY_IP101) },
-
+    { MP_ROM_QSTR(MP_QSTR_active), MP_ROM_PTR(&esp_active_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ebroadcasts), MP_ROM_PTR(&netif_enable_broadcasts_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mode),MP_ROM_PTR(&esp_mode_obj) },
+    
     // ETH Clock modes from ESP-IDF
     #if !MICROPY_ESP_IDF_4
     { MP_ROM_QSTR(MP_QSTR_ETH_CLOCK_GPIO0_IN), MP_ROM_INT(ETH_CLOCK_GPIO0_IN) },
@@ -806,3 +932,4 @@ const mp_obj_module_t mp_module_network = {
     .base = { &mp_type_module },
     .globals = (mp_obj_dict_t *)&mp_module_network_globals,
 };
+

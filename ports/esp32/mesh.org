@@ -1,0 +1,11 @@
+#+title: Adding mesh capabilities to esp32 port
+#+author: Eric Gustafson
+
+* Goal
+  - [ ] Add route table entries for AP connections
+
+  [2020-09-22 Tue] It looks like it might just work; or just requiring some
+  minor adjustments to get the standard freertos lwip routing to work.
+
+* Key areas to learn now to implement this
+  [[file:~/esp-idf/components/tcpip_adapter/tcpip_adapter_lwip.c::static%20esp_err_t%20tcpip_adapter_start(tcpip_adapter_if_t%20tcpip_if,%20uint8_t%20*mac,%20tcpip_adapter_ip_info_t%20*ip_info)][tcpip_adapter_start]]
