@@ -61,6 +61,7 @@
 #define MODNETWORK_INCLUDE_CONSTANTS (1)
 
 STATIC mp_obj_t netif_enable_broadcasts();
+STATIC mp_obj_t routes();
 
 NORETURN void _esp_exceptions(esp_err_t e) {
     switch (e) {
@@ -125,7 +126,7 @@ STATIC const wlan_if_obj_t wlan_sta_obj = {{&wlan_if_type}, WIFI_IF_STA};
 STATIC const wlan_if_obj_t wlan_ap_obj = {{&wlan_if_type}, WIFI_IF_AP};
 
 // Set to "true" if esp_wifi_start() was called
-static bool wifi_started = false;
+//static bool wifi_started = false;
 
 // Set to "true" if the STA interface is requested to be connected by the
 // user, used for automatic reassociation.
@@ -866,6 +867,141 @@ STATIC mp_obj_t netif_enable_broadcasts() {
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(netif_enable_broadcasts_obj, netif_enable_broadcasts);
 
+/**
+ * ********* MESH ********************************************
+ *  Returns an address to send this packet to.  This is the next-hop
+ *  gateway.  NULL is no route.   This function is defined in lwip_hooks.h 
+ *  and is #defined into the LWIP file as described in the documentation:
+ *  LWIP_HOOK_ETHARP_GET https://www.nongnu.org/lwip/2_0_x/group__lwip__opts__hooks.html
+ *
+ *  The STA interface is the default route, so we don't need to do
+ *  anything, we only use this for the AP interface.
+ */
+ip4_addr_t*
+mesh_hook_etharp_get_gw(const struct netif * sending_netif, const ip4_addr_t * destination_ipaddr) {
+  return NULL;
+}
+
+
+// LWIP_HOOK_IP4_ROUTE
+#if ESP_LWIP
+struct netif * ESP_IRAM_ATTR
+#else
+struct netif *
+#endif
+mesh_ip4_route(const ip4_addr_t *dest, const ip4_addr_t *src) {
+  return NULL;
+}
+
+/**
+ * ********* MESH ********************************************
+ **/
+/**
+ * The routes on the AP side.  
+ */
+typedef struct mesh_route_record {
+  ip4_addr_t ip;      /**< Interface IPV4 address */
+  ip4_addr_t netmask; /**< Interface IPV4 netmask */
+  ip4_addr_t gw;      /**< Interface IPV4 gateway address */
+  struct mesh_route_record *next;
+} meshrr;
+
+/**
+ *  Fill up a meshrr record from python objects.  The python objects are all
+ *  python strings of IP4 addresses, ala 255.255.255.255
+ */
+STATIC void meshrr_pinit(meshrr* target, mp_obj_t ip, mp_obj_t netmask, mp_obj_t gw) {
+  netutils_parse_ipv4_addr(ip, (void *)&(target->ip), NETUTILS_BIG);
+  netutils_parse_ipv4_addr(netmask, (void *)&(target->netmask), NETUTILS_BIG);
+  netutils_parse_ipv4_addr(gw, (void *)&(target->gw), NETUTILS_BIG);
+}
+meshrr *ap_routes = NULL;
+
+int meshrr_equal(meshrr *a, meshrr *b) {
+  return
+    (a->ip.addr      == b->ip.addr) &&
+    (a->netmask.addr == b->netmask.addr) &&
+    (a->gw.addr      == b->gw.addr);
+}
+
+/**
+ * Returns the head of the list if the head of the list is equal to *a, otherwise
+ * return the previous pointer in the linked list if ->next == *a.  Returns NULL if
+ * no match
+ */
+meshrr* meshrr_search(meshrr *a) {
+  meshrr *p;
+  if( meshrr_equal(a,ap_routes) ) {
+    return ap_routes;
+  }
+  for(p = ap_routes; p && p->next; p = p->next) {
+    if( meshrr_equal(p->next,a) ) {
+      return p;
+    }
+  }
+  return NULL;
+}
+
+STATIC mp_obj_t routes() {
+  // ip route
+  // Returns a python list of the route table from the lwip/freertos netif.
+  struct netif *netif_p;
+  meshrr *mrr_p;
+  mp_obj_t list = mp_obj_new_list(0, NULL);  
+  for(netif_p = netif_list; netif_p; netif_p = netif_p->next) {
+    mp_obj_tuple_t *t = mp_obj_new_tuple(4, NULL);
+    t->items[0] = netutils_format_ipv4_addr((uint8_t *)&netif_p->ip_addr,NETUTILS_BIG);
+    t->items[1] = netutils_format_ipv4_addr((uint8_t *)&netif_p->netmask,NETUTILS_BIG);
+    t->items[2] = netutils_format_ipv4_addr((uint8_t *)&netif_p->gw,NETUTILS_BIG);
+    t->items[3] = mp_obj_new_int((int)(netif_p->state));
+    mp_obj_list_append(list,t);
+  }
+  for(mrr_p = ap_routes; mrr_p; mrr_p = mrr_p->next) {
+    mp_obj_tuple_t *t = mp_obj_new_tuple(4, NULL);
+    t->items[0] = netutils_format_ipv4_addr((uint8_t *)&mrr_p->ip,NETUTILS_BIG);
+    t->items[1] = netutils_format_ipv4_addr((uint8_t *)&mrr_p->netmask,NETUTILS_BIG);
+    t->items[2] = netutils_format_ipv4_addr((uint8_t *)&mrr_p->gw,NETUTILS_BIG);
+    t->items[3] = mp_const_none;
+    mp_obj_list_append(list,t);    
+  }
+  return list;
+}
+
+  
+STATIC mp_obj_t route_add(mp_obj_t ip, mp_obj_t netmask, mp_obj_t gw) {
+  meshrr *obj = (meshrr*)calloc(1,sizeof(meshrr));
+  meshrr_pinit(obj,ip,netmask,gw);
+  obj->next = ap_routes;
+  ap_routes = obj;
+  return mp_const_none;
+}
+
+STATIC mp_obj_t route_del(mp_obj_t ip, mp_obj_t netmask, mp_obj_t gw) {
+  meshrr target,*a =NULL,*tmp;
+  meshrr_pinit(&target,ip,netmask,gw);
+  if( ap_routes == NULL ) {
+    return mp_const_none;
+  }
+  if( (a = meshrr_search(&target)) == NULL) {
+    return mp_const_none;
+  }
+  if( a == ap_routes) { //head of list is the value
+    ap_routes = ap_routes->next;
+    free(a);
+    return mp_const_none;
+  }
+  //The next pointer is the value to be removed
+  tmp = a->next;
+  a->next = a->next->next;
+  free(tmp);
+  return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(routes_obj, routes);
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(route_add_obj, route_add);
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(route_del_obj, route_del);
+
+
 STATIC const mp_rom_map_elem_t mp_module_network_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_network) },
     { MP_ROM_QSTR(MP_QSTR___init__), MP_ROM_PTR(&esp_initialize_obj) },
@@ -902,6 +1038,9 @@ STATIC const mp_rom_map_elem_t mp_module_network_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_PHY_IP101), MP_ROM_INT(PHY_IP101) },
     { MP_ROM_QSTR(MP_QSTR_active), MP_ROM_PTR(&esp_active_obj) },
     { MP_ROM_QSTR(MP_QSTR_ebroadcasts), MP_ROM_PTR(&netif_enable_broadcasts_obj) },
+    { MP_ROM_QSTR(MP_QSTR_routes), MP_ROM_PTR(&routes_obj) },
+    { MP_ROM_QSTR(MP_QSTR_route_add), MP_ROM_PTR(&route_add_obj) },
+    { MP_ROM_QSTR(MP_QSTR_route_del), MP_ROM_PTR(&route_del_obj) },
     { MP_ROM_QSTR(MP_QSTR_mode),MP_ROM_PTR(&esp_mode_obj) },
     
     // ETH Clock modes from ESP-IDF

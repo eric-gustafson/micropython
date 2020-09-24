@@ -493,7 +493,7 @@ ESPIDF_SPI_FLASH_O = $(patsubst %.c,%.o,$(wildcard $(ESPCOMP)/spi_flash/*.c))
 
 ESPIDF_ULP_O = $(patsubst %.c,%.o,$(wildcard $(ESPCOMP)/ulp/*.c))
 
-$(BUILD)/$(ESPCOMP)/lwip/%.o: CFLAGS += -Wno-address -Wno-unused-variable -Wno-unused-but-set-variable
+$(BUILD)/$(ESPCOMP)/lwip/%.o: CFLAGS += -Wno-address -Wno-unused-variable -Wno-unused-but-set-variable -DLWIP_HOOK_IP4_ROUTE=mesh_ip4_route -DLWIP_HOOK_ETHARP_GET_GW=mesh_hook_etharp_get_gw -DLWIP_HOOK_FILENAME=\"$(addprefix $(dir), "lwip_hooks.h")\"
 ESPIDF_LWIP_O = $(patsubst %.c,%.o,\
 	$(wildcard $(ESPCOMP)/lwip/apps/dhcpserver/*.c) \
 	$(wildcard $(ESPCOMP)/lwip/lwip/src/api/*.c) \
