@@ -931,6 +931,9 @@ int meshrr_equal(meshrr *a, meshrr *b) {
  */
 meshrr* meshrr_search(meshrr *a) {
   meshrr *p;
+  if( ap_routes == NULL ) {
+    return NULL;
+  }
   if( meshrr_equal(a,ap_routes) ) {
     return ap_routes;
   }
@@ -971,8 +974,12 @@ STATIC mp_obj_t routes() {
 STATIC mp_obj_t route_add(mp_obj_t ip, mp_obj_t netmask, mp_obj_t gw) {
   meshrr *obj = (meshrr*)calloc(1,sizeof(meshrr));
   meshrr_pinit(obj,ip,netmask,gw);
-  obj->next = ap_routes;
-  ap_routes = obj;
+  if( meshrr_search(obj) == NULL ) {
+    obj->next = ap_routes;
+    ap_routes = obj;
+  } else {
+    free(obj);
+  }
   return mp_const_none;
 }
 
